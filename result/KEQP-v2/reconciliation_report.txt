@@ -1,0 +1,101 @@
+工程量核对报告 — Reconciliation Report
+图纸: X-HLP3-CR-F3-LAY-KEQP-02-002(20260512).dwg
+总实体: 5867  |  已计入: 2348  |  排除: 3519  |  XREF: 181
+核对结果: 2348 + 3519 = 5867 ✓ 吻合
+
+图例: ✓已计入 = 出现在quantity_takeoff.csv  |  ✗排除 = 标注/填充/云线(正确)
+
+图层                                              总数     计入     排除  XREF  状态
+-----------------------------------------------------------------------------------------------
+  0                                            259     22    237     0  ✓ 部分计入(标注已排除)
+  0-A-C200X100X35X3.0                            3      3      0     0  ✓ 完全计入
+  0-A-方钢-200x6                                   1      1      0     0  ✓ 完全计入
+  0-BG                                          25      0     25     0  ✗ 正确排除(标注/填充层)
+  0-DCC                                        410    235    175     1  ✓ 部分计入(标注已排除)
+  0-DCC-Divider                                218      0    218     0  ✗ 正确排除(标注/填充层)
+  0-DCC-Divider-H                              102      0    102     0  ✗ 正确排除(标注/填充层)
+  0-DCC-STRUC                                  268      0    268     0  ✗ 正确排除(标注/填充层)
+  0-DCC-STRUC-T                               1257     54   1203     0  ✓ 部分计入(标注已排除)
+  20260401-修改                                   44      0     44     0  ✗ 正确排除(标注/填充层)
+  20260415-修改                                   42      0     42     0  ✗ 正确排除(标注/填充层)
+  20260421-修改                                    2      0      2     0  ✗ 正确排除(标注/填充层)
+  20260423-修改                                    6      0      6     0  ✗ 正确排除(标注/填充层)
+  20260512-修改                                   19      0     19     0  ✗ 正确排除(标注/填充层)
+  ANCHOR BOLTS                                 279    236     43     0  ✓ 部分计入(标注已排除)
+  ANGEL STEEL_75x75x3.0                        239    239      0     0  ✓ 完全计入
+  BOLTS                                        737    708     29     0  ✓ 部分计入(标注已排除)
+  COIL-BANK                                     29      0     29     0  ✗ 正确排除(标注/填充层)
+  Cloud-20250416                                 5      0      5     0  ✗ 正确排除(标注/填充层)
+  DCC-Size                                     888      0    888     0  ✗ 正确排除(标注/填充层)
+  Defpoints                                      3      0      3     0  ✗ 正确排除(标注/填充层)
+  K-1111                                        23      0     23     0  ✗ 正确排除(标注/填充层)
+  K-BZ-01                                       37      0     37     1  ✗ 正确排除(标注/填充层)
+  K-CEIL-DCC-RACK                              650    625     25     0  ✓ 部分计入(标注已排除)
+  K-CEIL-DIM                                     2      0      2     0  ✗ 正确排除(标注/填充层)
+  K-CEIL-DIV-DOOR_Phase 2                        6      6      0     0  ✓ 完全计入
+  K-KART-TEXT                                   48      0     48     0  ✗ 正确排除(标注/填充层)
+  K-PART-DOOR                                   45     45      0     0  ✓ 完全计入
+  X-HL-SM-F1-SEC-00-01$0$BOLTS                 171    171      0     0  ✓ 完全计入
+  X-HLP3-CR-F3-LAY-KEQP-02-002_20260401 DC...      3      0      3     0  ✗ 正确排除(标注/填充层)
+  X-HLP3-CR-F3-LAY-KEQP-02-002_20260401 DC...      1      1      0     0  ✓ 完全计入
+  X-HLP3-CR-F3-LAY-KEQP-02-002_20260401 DC...      2      2      0     0  ✓ 完全计入
+  X-HLP3-CR-F3-LAY-KPART-03-001$0$K-PART-DOOR      1      0      1     1  ✗ 正确排除(标注/填充层)
+  XREF                                           3      0      3     1  ✗ 正确排除(标注/填充层)
+  k-m2                                          39      0     39     0  ✗ 正确排除(标注/填充层)
+-----------------------------------------------------------------------------------------------
+  合计                                          5867   2348   3519   181
+
+排除明细 (应全部为标注/填充/云线)
+-----------------------------------------------------------------------------------------------
+  0                                         CIRCLE:8, DIMENSION(尺寸):57, HATCH(填充):30, LINE(非墙/非结构):71, LWPOLYLINE(轮廓线):38, TEXT(标注):33
+  0-A-C200X100X35X3.0                       
+  0-A-方钢-200x6                              
+  0-BG                                      INSERT(类型标记):25
+    ⚠ 需人工检查: INSERT(类型标记)
+  0-DCC                                     XREF:175
+  0-DCC-Divider                             LWPOLYLINE(轮廓线):218
+  0-DCC-Divider-H                           HATCH(填充):52, LWPOLYLINE(轮廓线):50
+  0-DCC-STRUC                               LINE(非墙/非结构):12, LWPOLYLINE(轮廓线):256
+  0-DCC-STRUC-T                             CIRCLE:19, DIMENSION(尺寸):131, LINE(非墙/非结构):362, LWPOLYLINE(轮廓线):262, SOLID(填充):144, TEXT(标注):285
+  20260401-修改                               LWPOLYLINE(轮廓线):22, TEXT(标注):22
+  20260415-修改                               LWPOLYLINE(轮廓线):21, TEXT(标注):21
+  20260421-修改                               LWPOLYLINE(轮廓线):1, TEXT(标注):1
+  20260423-修改                               LWPOLYLINE(轮廓线):3, TEXT(标注):3
+  20260512-修改                               LWPOLYLINE(轮廓线):9, TEXT(标注):10
+  ANCHOR BOLTS                              LINE(非墙/非结构):43
+  ANGEL STEEL_75x75x3.0                     
+  BOLTS                                     CIRCLE:2, LINE(非墙/非结构):3, LWPOLYLINE(轮廓线):24
+  COIL-BANK                                 LINE(非墙/非结构):11, LWPOLYLINE(轮廓线):18
+  Cloud-20250416                            INSERT(其他):5
+  DCC-Size                                  TEXT(标注):888
+  Defpoints                                 LWPOLYLINE(轮廓线):3
+  K-1111                                    LWPOLYLINE(轮廓线):21, TEXT(标注):2
+  K-BZ-01                                   DIMENSION(尺寸):32, INSERT(其他):1, XREF:4
+  K-CEIL-DCC-RACK                           LWPOLYLINE(轮廓线):25
+  K-CEIL-DIM                                DIMENSION(尺寸):2
+  K-CEIL-DIV-DOOR_Phase 2                   
+  K-KART-TEXT                               TEXT(标注):48
+  K-PART-DOOR                               
+  X-HL-SM-F1-SEC-00-01$0$BOLTS              
+  X-HLP3-CR-F3-LAY-KEQP-02-002_20260401 DC... LWPOLYLINE(轮廓线):3
+  X-HLP3-CR-F3-LAY-KEQP-02-002_20260401 DC... 
+  X-HLP3-CR-F3-LAY-KEQP-02-002_20260401 DC... 
+  X-HLP3-CR-F3-LAY-KPART-03-001$0$K-PART-DOOR XREF:1
+  XREF                                      DIMENSION(尺寸):2, XREF:1
+  k-m2                                      LWPOLYLINE(轮廓线):13, TEXT(标注):26
+
+⚠ 存在可疑未分类项，请人工检查上方标记项。
+
+外部参照 (块定义来自其他图纸)
+-----------------------------------------------------------------------------------------------
+  [0-DCC] X-HLP2-CR-F2-LAY-KEQP-02-002$0$DCC-28.5x18: 85
+  [0-DCC] X-HLP2-CR-F2-LAY-KEQP-02-002$0$DCC-28.523: 49
+  [0-DCC] X-HLP2-CR-F2-LAY-KEQP-02-002$0$DCC-28.5x26: 30
+  [0-DCC] X-HLP2-CR-F2-LAY-KEQP-02-002$0$DCC-2023: 9
+  [0-DCC] X-HLP2-CR-F2-LAY-KEQP-02-002$0$DCC-2023-H: 2
+  [K-BZ-01] X-HLP2-SCOLN-F3: 1
+  [K-BZ-01] D-HLP2-ST-F3-BEA-1-001: 1
+  [K-BZ-01] X-HLP3-AR-F3-LAY-02-001: 1
+  [K-BZ-01] X-HLP3-CR-F3-LAY-KPART-03-001: 1
+  [X-HLP3-CR-F3-LAY-KPART-03-001$0$K-PART-DOOR] X-HLP3-CR-F3-LAY-KPART-03-001$0$2023: 1
+  [XREF] X-HLP3-CR-F3-LAY-KPART-02-001: 1
