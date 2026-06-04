@@ -17,7 +17,8 @@ def parse_spec(spec):
         orient = '左'
     elif '右' in spec:
         orient = '右'
-    m = re.search(r'(DCC-[A-Z]\*?\d?)', spec)
+    # DCC letter model, strip *N quantity suffix: "DCC-C*2" → "DCC-C"
+    m = re.search(r'(DCC-[A-Z])(?:\*\d+)?', spec)
     if m:
         model = m.group(1)
     elif re.search(r'DCC-?\d', spec):
@@ -28,9 +29,8 @@ def parse_spec(spec):
 
 
 def model_sort_key(model):
-    order = {'DCC-F':0,'DCC-F*2':1,'DCC-E':2,'DCC-E*2':3,'DCC-D':4,'DCC-D*2':5,
-             'DCC-C':6,'DCC-C*2':7,'DCC-B':8,'DCC-B*2':9,'DCC-A':10,'DCC-A*2':11,
-             'DCC-7':12,'DCC-6':13,'DCC-5':14,'DCC-J':15,'DCC-J*2':16}
+    order = {'DCC-F':0, 'DCC-E':1, 'DCC-D':2, 'DCC-C':3, 'DCC-B':4, 'DCC-A':5,
+             'DCC-7':6, 'DCC-6':7, 'DCC-5':8, 'DCC-J':9}
     return order.get(model, 99)
 
 

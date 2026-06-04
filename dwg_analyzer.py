@@ -244,15 +244,61 @@ def build_text_index(msp, text_layers=None):
     return index
 
 
+def get_block_geometry(doc, block_name):
+    """Get the bounding box dimensions (width, height) of a block definition in mm.
+
+    Returns (width, height) or (0, 0) if not computable.
+    """
+    block = doc.blocks.get(block_name)
+    if block is None:
+        simple = re.sub(r'^.*\$0\$', '', block_name)
+        if simple != block_name:
+            block = doc.blocks.get(simple)
+    if block is None:
+        return 0, 0
+
+    min_x = min_y = float('inf')
+    max_x = max_y = float('-inf')
+    has_geometry = False
+
+    for e in block:
+        try:
+            if e.dxftype() == 'LINE':
+                sx, sy = e.dxf.start.x, e.dxf.start.y
+                ex, ey = e.dxf.end.x, e.dxf.end.y
+                min_x, max_x = min(min_x, sx, ex), max(max_x, sx, ex)
+                min_y, max_y = min(min_y, sy, ey), max(max_y, sy, ey)
+                has_geometry = True
+            elif e.dxftype() == 'LWPOLYLINE':
+                for px, py, *_ in e.get_points():
+                    min_x, max_x = min(min_x, px), max(max_x, px)
+                    min_y, max_y = min(min_y, py), max(max_y, py)
+                    has_geometry = True
+            elif e.dxftype() in ('CIRCLE', 'ARC'):
+                cx, cy = e.dxf.center.x, e.dxf.center.y
+                r = e.dxf.radius
+                min_x, max_x = min(min_x, cx - r), max(max_x, cx + r)
+                min_y, max_y = min(min_y, cy - r), max(max_y, cy + r)
+                has_geometry = True
+        except Exception:
+            pass
+
+    if not has_geometry:
+        return 0, 0
+    return round(max_x - min_x, 2), round(max_y - min_y, 2)
+
+
 def enrich_insert_with_text(insert_items, text_index, threshold_mm=3000):
     """Spatial match: for each INSERT, find nearby text annotations.
 
-    Adds 'label' and 'model' fields to each insert item in-place.
+    Adds 'label', 'model', and 'qty' fields to each insert item in-place.
     - label: dimension text found nearby (e.g. "3500x2300(左)")
-    - model: model type text (e.g. "DCC-F", "DCC-E*2")
+    - model: model type text, *N suffix stripped (e.g. "DCC-C" not "DCC-C*2")
+    - qty: quantity multiplier from *N suffix (default 1)
     """
     for item in insert_items:
         # Only enrich DCC equipment layers
+        item.setdefault("qty", 1)
         if "DCC" not in item["layer"].upper() and item["layer"] not in ("0-DCC",):
             item["label"] = ""
             item["model"] = ""
@@ -277,12 +323,52 @@ def enrich_insert_with_text(insert_items, text_index, threshold_mm=3000):
             # Dimension pattern: "3500x2300(左)", "2850*1800(右)"
             if re.search(r'\d{3,4}[xX×\*]\d{3,4}', txt):
                 dim_texts.append(txt)
-            # Model pattern: "DCC-F", "DCC-E*2", "DCC-C*2"
+            # Model pattern: "DCC-F", "DCC-E*2", "DCC-C*2" — strip *N as quantity
             elif re.match(r'^DCC-[A-Z]', txt, re.IGNORECASE):
-                model_texts.append(txt)
+                m = re.match(r'(DCC-[A-Z])(?:\*(\d+))?', txt, re.IGNORECASE)
+                if m:
+                    model_texts.append(m.group(1))
+                    if m.group(2):
+                        item["qty"] = int(m.group(2))
 
         item["label"] = dim_texts[0] if dim_texts else ""
         item["model"] = model_texts[0] if model_texts else ""
+
+
+def infer_dcc_qty_from_geometry(insert_items, doc):
+    """Dimension-based quantity inference for DCC items.
+
+    Compare label single-unit dimensions with actual block geometry.
+    If block is N× the label width/height (integer ratio, 3% tolerance),
+    multiply item["qty"] accordingly.
+    """
+    for item in insert_items:
+        cat = item.get("cat", "")
+        if cat not in ("DCC设备", "DCC支架"):
+            continue
+        label = item.get("label", "")
+        if not label:
+            continue
+        # Parse unit dimensions from label: e.g. "2850x1800(右)" → w=2850, h=1800
+        m = re.search(r'(\d{3,4})\s*[xX×\*]\s*(\d{3,4})', label)
+        if not m:
+            continue
+        label_w = int(m.group(1))
+        label_h = int(m.group(2))
+
+        block_name = item.get("block_name", "")
+        block_w, block_h = get_block_geometry(doc, block_name)
+        if block_w <= 0 or block_h <= 0:
+            continue
+
+        if label_w > 0 and label_h > 0:
+            ratio_w = block_w / label_w
+            ratio_h = block_h / label_h
+            n_w, n_h = round(ratio_w), round(ratio_h)
+            if n_w >= 2 and abs(ratio_w - n_w) < 0.03:
+                item["qty"] = item.get("qty", 1) * n_w
+            if n_h >= 2 and abs(ratio_h - n_h) < 0.03:
+                item["qty"] = item.get("qty", 1) * n_h
 
 
 # ══════════════════════════════════════════════════════
@@ -336,6 +422,11 @@ def analyze_dwg(dwg_path, output_dir, export_csv=True):
                 cat, base = "其他", str(block_name)
             ix = round(e.dxf.insert.x, 2) if e.dxf.hasattr("insert") else 0
             iy = round(e.dxf.insert.y, 2) if e.dxf.hasattr("insert") else 0
+
+            # Skip block definition templates dumped at origin
+            if abs(ix) < 10 and abs(iy) < 10:
+                continue
+
             insert_items.append({
                 "cat": cat, "base": base,
                 "block_name": block_name,
@@ -361,6 +452,7 @@ def analyze_dwg(dwg_path, output_dir, export_csv=True):
     print("Spatial matching (INSERT ↔ TEXT labels)...")
     text_index = build_text_index(msp)
     enrich_insert_with_text(insert_items, text_index)
+    infer_dcc_qty_from_geometry(insert_items, doc)
     enriched_count = sum(1 for it in insert_items if it["label"] or it["model"])
     print(f"  Enriched {enriched_count}/{len(insert_items)} INSERTs with text labels")
 
@@ -391,7 +483,7 @@ def analyze_dwg(dwg_path, output_dir, export_csv=True):
         cat = item["cat"]
         if cat in COMPONENT_CATS:
             insert_by_cat[cat].append(item)
-            accounted_count += 1
+            accounted_count += item.get("qty", 1)
         elif cat not in ("外部参照", "未知"):
             insert_by_cat[cat].append(item)
 
@@ -444,7 +536,7 @@ def analyze_dwg(dwg_path, output_dir, export_csv=True):
                     if model:
                         size = (size + " " + model).strip()
                 w.writerow([cat, first["base"], size,
-                           len(instances), "个", first["layer"], ""])
+                           sum(it.get("qty", 1) for it in instances), "个", first["layer"], ""])
 
         # Struct lines
         for ln in sorted(struct_lines):
