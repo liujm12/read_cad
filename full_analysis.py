@@ -20,20 +20,68 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # ═══════════════════════════════════
 
 def load_all_dwgs(cad_dir):
-    """Load all DWG files, return list of (filename, doc, modelspace_entities)."""
+    """Load all DWG files, return list of (filename, doc, modelspace_entities, floor)."""
     all_data = []
     for dwg_path in sorted(cad_dir.glob("*.dwg")):
         print(f"  Loading: {dwg_path.name}...")
         doc = odafc.readfile(str(dwg_path))
         msp_entities = list(doc.modelspace())
+        # Extract floor from filename: e.g. "...-F3-..." → "F3"
+        floor = None
+        m = re.search(r'(?:[_-])?(F\d+|B\d+[A-Z]?|PB\d+[A-Z]?)', dwg_path.name, re.IGNORECASE)
+        if m:
+            floor = m.group(1).upper()
         all_data.append({
             "filename": dwg_path.name,
             "stem": dwg_path.stem,
             "doc": doc,
             "entities": msp_entities,
+            "floor": floor,
         })
-        print(f"    {len(msp_entities)} entities, {len(doc.layers)} layers")
+        floor_str = floor or "?"
+        print(f"    {len(msp_entities)} entities, {len(doc.layers)} layers, floor={floor_str}")
     return all_data
+
+
+def resolve_unknown_floors(all_data):
+    """If any files have unknown floor, ask user to specify.
+
+    Modifies all_data in-place. Returns True if all floors resolved.
+    """
+    unknown = [(i, d) for i, d in enumerate(all_data) if d["floor"] is None]
+    if not unknown:
+        return True
+
+    known_floors = sorted(set(d["floor"] for d in all_data if d["floor"]))
+    print("\n" + "=" * 70)
+    print("⚠ 以下图纸无法自动识别楼层:")
+    for idx, (i, d) in enumerate(unknown):
+        print(f"  [{idx+1}] {d['filename']}")
+    print()
+    if known_floors:
+        print(f"  已知楼层: {', '.join(known_floors)}")
+    print("  请逐张指定楼层（如: 1=F2, 2=F3），输入 0=独立楼层")
+    response = input("  > ").strip()
+
+    # Parse user response
+    for part in response.split(","):
+        part = part.strip()
+        m = re.match(r'(\d+)\s*=\s*(\S+)', part)
+        if m:
+            n = int(m.group(1)) - 1
+            floor_val = m.group(2).upper()
+            if 0 <= n < len(unknown):
+                all_data[unknown[n][0]]["floor"] = floor_val if floor_val != "0" else f"_UNK{unknown[n][0]}"
+
+    # Check if any still unresolved
+    still_unknown = [d for d in all_data if d["floor"] is None]
+    if still_unknown:
+        # Assign auto floor names for remaining
+        for i, d in enumerate(still_unknown):
+            d["floor"] = f"_UNK{i+1}"
+        print(f"  {len(still_unknown)} 张图纸仍未指定，已分配独立楼层\n")
+
+    return True
 
 
 # ═══════════════════════════════════
@@ -158,6 +206,24 @@ def assign_axis(x, y, grid):
     return axis_label, zone
 
 
+def compute_building_bounds(grid, padding_mm=5000):
+    """Compute building bounding box from axis grid positions.
+
+    Returns (x_min, y_min, x_max, y_max) or None if no grid available.
+    """
+    if not grid:
+        return None
+    numbers = grid["number_axes"]  # [(x, num), ...]
+    letters = grid["letter_axes"]  # [(y, letter), ...]
+    if not numbers or not letters:
+        return None
+    x_min = numbers[0][0] - padding_mm
+    x_max = numbers[-1][0] + padding_mm
+    y_min = letters[0][0] - padding_mm
+    y_max = letters[-1][0] + padding_mm
+    return x_min, y_min, x_max, y_max
+
+
 # ═══════════════════════════════════
 # PHASE 3: CATEGORIZE & SPATIAL MATCH
 # ═══════════════════════════════════
@@ -263,30 +329,91 @@ def categorize_block(name, layer=""):
 
 
 def extract_size_and_model(spec_text):
-    """Parse spec string into width, height, orientation, model."""
+    """Parse spec string into width, height, orientation, model, qty_mult.
+
+    *N suffix on model (e.g. "DCC-C*2") is stripped from model and returned as qty_mult.
+    """
     w = h = orient = model = ""
+    qty_mult = 1
     m = re.search(r'(\d{3,4})\s*[xX×\*]\s*(\d{3,4})', spec_text)
     if m:
         w = f"{int(m.group(1))/1000:.2f}"
         h = f"{int(m.group(2))/1000:.2f}"
     if '左' in spec_text: orient = '左'
     elif '右' in spec_text: orient = '右'
-    m = re.search(r'(DCC-[A-Z]\*?\d?)', spec_text)
-    if m: model = m.group(1)
+    # DCC letter model with optional *N quantity suffix: "DCC-F", "DCC-E*2"
+    m = re.search(r'(DCC-[A-Z])(?:\*(\d+))?', spec_text, re.IGNORECASE)
+    if m:
+        model = m.group(1)
+        if m.group(2):
+            qty_mult = int(m.group(2))
     elif re.search(r'DCC-?\d', spec_text):
-        m2 = re.search(r'(DCC-?\d+)', spec_text)
+        # "DCC-4-1,8台" → model="DCC-4-1", qty=8
+        m2 = re.search(r'(DCC-?\d+(?:-\d+)*)\s*[,，]\s*(\d+)\s*台', spec_text)
         if m2:
-            model = re.sub(r'[-–]\d+.*$', '', m2.group(1)).strip()
-    return w, h, orient, model
+            model = m2.group(1)
+            qty_mult *= int(m2.group(2))
+        else:
+            m2 = re.search(r'(DCC-?\d+(?:-\d+)*)', spec_text)
+            if m2:
+                model = m2.group(1)
+    return w, h, orient, model, qty_mult
 
 
 def model_sort_key(model):
-    order = {'DCC-F':0,'DCC-F*2':1,'DCC-E':2,'DCC-E*2':3,'DCC-D':4,'DCC-D*2':5,
-             'DCC-C':6,'DCC-C*2':7,'DCC-B':8,'DCC-B*2':9,'DCC-A':10,'DCC-A*2':11,
-             'DCC-7':12,'DCC-6':13,'DCC-5':14,'DCC-4':15,'DCC-J':16,'DCC-J*2':17}
+    order = {'DCC-F':0, 'DCC-E':1, 'DCC-D':2, 'DCC-C':3, 'DCC-B':4, 'DCC-A':5,
+             'DCC-7':6, 'DCC-6':7, 'DCC-5':8, 'DCC-4':9, 'DCC-J':10}
     if model.startswith('DCC-') and model[4:].isdigit():
         return order.get(model, 50 + int(model[4:]))
     return order.get(model, 99)
+
+
+def get_block_geometry(doc, block_name):
+    """Get the bounding box dimensions (width, height) of a block definition in mm.
+
+    Returns (width, height) or (0, 0) if not computable.
+    Results are cached per (doc, block_name) for performance.
+    """
+    # Try to find the block definition
+    block = doc.blocks.get(block_name)
+    if block is None:
+        # Try stripping XREF prefix: "XREF$0$BLOCK" → "BLOCK"
+        simple = re.sub(r'^.*\$0\$', '', block_name)
+        if simple != block_name:
+            block = doc.blocks.get(simple)
+    if block is None:
+        return 0, 0
+
+    # Compute bounding box from block's constituent entities
+    min_x = min_y = float('inf')
+    max_x = max_y = float('-inf')
+    has_geometry = False
+
+    for e in block:
+        try:
+            if e.dxftype() == 'LINE':
+                sx, sy = e.dxf.start.x, e.dxf.start.y
+                ex, ey = e.dxf.end.x, e.dxf.end.y
+                min_x, max_x = min(min_x, sx, ex), max(max_x, sx, ex)
+                min_y, max_y = min(min_y, sy, ey), max(max_y, sy, ey)
+                has_geometry = True
+            elif e.dxftype() == 'LWPOLYLINE':
+                for px, py, *_ in e.get_points():
+                    min_x, max_x = min(min_x, px), max(max_x, px)
+                    min_y, max_y = min(min_y, py), max(max_y, py)
+                    has_geometry = True
+            elif e.dxftype() in ('CIRCLE', 'ARC'):
+                cx, cy = e.dxf.center.x, e.dxf.center.y
+                r = e.dxf.radius
+                min_x, max_x = min(min_x, cx - r), max(max_x, cx + r)
+                min_y, max_y = min(min_y, cy - r), max(max_y, cy + r)
+                has_geometry = True
+        except Exception:
+            pass
+
+    if not has_geometry:
+        return 0, 0
+    return round(max_x - min_x, 2), round(max_y - min_y, 2)
 
 
 # ═══════════════════════════════════
@@ -328,16 +455,24 @@ def find_nearby_labels(x, y, text_index, threshold=5000):
     for d, txt in nearby:
         if re.search(r'\d{3,4}\s*[xX×\*]\s*\d{3,4}', txt):
             dim_texts.append(txt)
-        # Match DCC-letter (DCC-F, DCC-E*2) AND DCC-number (DCC-4, DCC-7)
+        # Match DCC-letter (DCC-F, DCC-E*2) AND DCC-number (DCC-4, DCC-3-1)
         elif re.match(r'^DCC-[A-Z0-9]', txt, re.IGNORECASE):
-            # Clean up quantity notes: "DCC-4-1,8台" → "DCC-4"
-            clean = re.sub(r'[-–]\d+.*$', '', txt).strip()
-            if clean:
-                model_texts.append(clean)
+            # "DCC-4-1,8台" → model="DCC-4-1", qty=8
+            # "DCC-3-1,10台" → model="DCC-3-1", qty=10
+            m_qty = re.match(r'(DCC-\d+(?:-\d+)*)\s*[,，]\s*(\d+)\s*台', txt, re.IGNORECASE)
+            if m_qty:
+                model_texts.append((m_qty.group(1), int(m_qty.group(2))))
+            else:
+                model_texts.append((txt, 1))
 
     label = dim_texts[0] if dim_texts else ""
-    model = model_texts[0] if model_texts else ""
-    return label, model
+    if model_texts:
+        model = model_texts[0][0]
+        label_qty = model_texts[0][1]
+    else:
+        model = ""
+        label_qty = 1
+    return label, model, label_qty
 
 
 # ═══════════════════════════════════
@@ -349,13 +484,20 @@ def main():
     print("PHASE 1: Loading all DWG files")
     print("=" * 70)
     all_data = load_all_dwgs(CAD_DIR)
-    print(f"  Total: {len(all_data)} files loaded\n")
+    print(f"  Total: {len(all_data)} files loaded")
+    resolve_unknown_floors(all_data)
+    print()
 
     print("=" * 70)
     print("PHASE 2: Extracting axis grid")
     print("=" * 70)
     grid = extract_axis_grid(all_data)
-    print()
+    building_bounds = compute_building_bounds(grid)
+    if building_bounds:
+        bx0, by0, bx1, by1 = building_bounds
+        print(f"  Building bounds: ({bx0:.0f}, {by0:.0f}) ~ ({bx1:.0f}, {by1:.0f})\n")
+    else:
+        print("  WARNING: No building bounds — all INSERTs will be kept\n")
 
     print("=" * 70)
     print("PHASE 3: Building text index")
@@ -371,6 +513,7 @@ def main():
     all_inserts = []
     for data in all_data:
         source = data["stem"]
+        floor = data["floor"]
         for e in data["entities"]:
             if e.dxftype() != "INSERT":
                 continue
@@ -381,14 +524,24 @@ def main():
             x = e.dxf.insert.x
             y = e.dxf.insert.y
 
+            # Skip block definition templates dumped at origin
+            if abs(x) < 10 and abs(y) < 10:
+                continue
+
+            # Skip INSERTs outside the building bounding box (legends, installation guides)
+            if building_bounds:
+                bx0, by0, bx1, by1 = building_bounds
+                if x < bx0 or x > bx1 or y < by0 or y > by1:
+                    continue
+
             cat = categorize_block(block_name, layer)
             if cat in ("外部参照", "未知", "轴网符号", "剖切符号", "符号", "符号标记", "修订标记", "类型标记"):
                 continue
 
             # Spatial matching for labels (cascade: 5m → 10m)
-            label, model = find_nearby_labels(x, y, text_index, 5000)
+            label, model, label_qty = find_nearby_labels(x, y, text_index, 5000)
             if not label:
-                label, model = find_nearby_labels(x, y, text_index, 10000)
+                label, model, label_qty = find_nearby_labels(x, y, text_index, 10000)
 
             # Combine spec — try to get raw dimensions from block name
             raw_size = ""
@@ -422,17 +575,24 @@ def main():
             if model:
                 spec = (spec + " " + model).strip()
 
-            w, h, orient, parsed_model = extract_size_and_model(spec)
+            w, h, orient, parsed_model, qty_mult = extract_size_and_model(spec)
+            qty_mult *= label_qty  # from model text like "DCC-4-1,8台"
             if not parsed_model and model:
-                parsed_model = model
+                # Strip *N suffix from raw model text: "DCC-C*2" → model="DCC-C", qty×2
+                m = re.match(r'(.+?)\*(\d+)$', model)
+                if m:
+                    parsed_model = m.group(1)
+                    qty_mult *= int(m.group(2))
+                else:
+                    parsed_model = model
 
             # Fallback: extract model from block name if spatial matching failed
             if not parsed_model:
                 bn = block_name
                 # Strip XREF prefix
                 bn = re.sub(r'^.*\$0\$', '', bn)
-                # DCC-1-3 → DCC-1, DCC-3-1 → DCC-3
-                m = re.match(r'(DCC-\d+)', bn)
+                # DCC-1-3 → DCC-1-3, DCC-3-1 → DCC-3-1 (keep full multi-segment name)
+                m = re.match(r'(DCC-\d+(?:-\d+)*)', bn)
                 if m:
                     parsed_model = m.group(1)
                 # DCC-2400x1200 → DCC-2400
@@ -457,20 +617,42 @@ def main():
             # Block-name fallback for DCC支架 (same logic as DCC设备)
             if cat == "DCC支架" and not parsed_model:
                 bn = re.sub(r'^.*\$0\$', '', block_name)
-                m = re.match(r'(DCC-\d+)', bn)
+                m = re.match(r'(DCC-\d+(?:-\d+)*)', bn)
                 if m: parsed_model = m.group(1)
                 elif re.match(r'DCC\d{3,4}[xX]\d{3,4}', bn):
                     m = re.match(r'(DCC\d{3,4}[xX]\d{3,4})', bn)
                     parsed_model = m.group(1)
                 elif re.match(r'DCC\d+', bn):
-                    m = re.match(r'(DCC\d+)', bn)
+                    m = re.match(r'(DCC\d+(?:-\d+)*)', bn)
                     parsed_model = m.group(1)
+
+            # Dimension-based quantity inference for DCC items:
+            # compare label single-unit size vs actual block geometry
+            if cat in ("DCC设备", "DCC支架") and w and h:
+                sx = e.dxf.xscale if e.dxf.hasattr('xscale') else 1
+                sy = e.dxf.yscale if e.dxf.hasattr('yscale') else 1
+                block_w, block_h = get_block_geometry(data["doc"], block_name)
+                if block_w > 0 and block_h > 0:
+                    actual_w = block_w * abs(sx)
+                    actual_h = block_h * abs(sy)
+                    label_w_mm = float(w) * 1000
+                    label_h_mm = float(h) * 1000
+                    if label_w_mm > 0 and label_h_mm > 0:
+                        ratio_w = actual_w / label_w_mm
+                        ratio_h = actual_h / label_h_mm
+                        n_w, n_h = round(ratio_w), round(ratio_h)
+                        # 3% tolerance: integer ratio >= 2
+                        if n_w >= 2 and abs(ratio_w - n_w) < 0.03:
+                            qty_mult *= n_w
+                        if n_h >= 2 and abs(ratio_h - n_h) < 0.03:
+                            qty_mult *= n_h
 
             # Axis assignment
             axis_label, zone = assign_axis(x, y, grid)
 
             all_inserts.append({
                 "source": source,
+                "floor": floor,
                 "cat": cat,
                 "block_name": block_name,
                 "spec": spec,
@@ -478,6 +660,7 @@ def main():
                 "height": h,
                 "orient": orient,
                 "model": parsed_model,
+                "qty": qty_mult,
                 "axis": axis_label,
                 "zone": zone,
                 "x": round(x, 2),
@@ -509,6 +692,51 @@ def main():
                 break
 
     print(f"  Dimension-based model inference: {filled} items filled\n")
+
+    # ── Spatial deduplication across drawings ──
+    # Same floor + same (cat, model, w, h, orient) + within 100mm → same device
+    DEDUP_TOLERANCE_MM = 100
+
+    # Build dedup key: (floor, cat, model, width, height, orient)
+    dedup_groups = defaultdict(list)
+    for it in all_inserts:
+        key = (it["floor"], it["cat"], it.get("model", ""), it["width"], it["height"], it["orient"])
+        dedup_groups[key].append(it)
+
+    deduped = []
+    merged_count = 0
+    for key, items in dedup_groups.items():
+        # Cluster by spatial proximity within this group
+        clustered = []  # list of clusters, each cluster is a list of items
+        for it in items:
+            x, y = it["x"], it["y"]
+            found = False
+            for cluster in clustered:
+                # Check if this item is within tolerance of any item in the cluster
+                for c in cluster:
+                    if abs(x - c["x"]) < DEDUP_TOLERANCE_MM and abs(y - c["y"]) < DEDUP_TOLERANCE_MM:
+                        cluster.append(it)
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                clustered.append([it])
+
+        for cluster in clustered:
+            if len(cluster) == 1:
+                deduped.append(cluster[0])
+            else:
+                # Merge: keep first, combine sources, use max qty
+                first = cluster[0]
+                sources = sorted(set(it["source"] for it in cluster))
+                first["source"] = ", ".join(sources)
+                first["qty"] = max(it.get("qty", 1) for it in cluster)
+                deduped.append(first)
+                merged_count += len(cluster) - 1
+
+    all_inserts = deduped
+    print(f"  Spatial dedup: {merged_count} duplicates merged (tolerance={DEDUP_TOLERANCE_MM}mm)")
 
     # ── Separate DCC equipment vs others ──
     dcc_eq = [it for it in all_inserts if it["cat"] == "DCC设备"]
@@ -596,7 +824,8 @@ def main():
             src_str = ", ".join(sources[:3])
             if len(sources) > 3:
                 src_str += f" +{len(sources)-3}"
-            cw.writerow([next_seq(), axis, zone, model, w, h, orient, "", len(instances), src_str])
+            cw.writerow([next_seq(), axis, zone, model, w, h, orient, "",
+                         sum(it.get("qty", 1) for it in instances), src_str])
 
         # ── DCC Racks ──
         section("二、DCC支架",
@@ -608,7 +837,8 @@ def main():
         for (model, w, h, orient, axis, zone), instances in sorted(rack_groups.items(),
                 key=lambda x: (model_sort_key(x[0][0]), -float(x[0][1] or 0))):
             sources = sorted(set(it["source"] for it in instances))
-            cw.writerow([next_seq(), axis, zone, model, w, h, orient, "", len(instances),
+            cw.writerow([next_seq(), axis, zone, model, w, h, orient, "",
+                         sum(it.get("qty", 1) for it in instances),
                          ", ".join(sources[:2])])
 
         # ── Doors ──
@@ -647,14 +877,17 @@ def main():
         # ── Per-file summary ──
         section("六、各图纸汇总",
                 ["图纸", "DCC设备", "DCC支架", "隔断/门", "门", "结构", "紧固件", "类型"])
+        def belongs_to(item, src):
+            """Check if item originates from src (handles merged multi-source)."""
+            return src in item["source"].split(", ")
         for data in all_data:
             src = data["stem"]
-            dcc_eq_n = sum(1 for it in dcc_eq if it["source"] == src)
-            dcc_rk_n = sum(1 for it in dcc_rack if it["source"] == src)
-            dcc_dv_n = sum(1 for it in dcc_div if it["source"] == src)
-            door_n = sum(1 for it in doors if it["source"] == src)
-            struct_n = sum(1 for it in struct if it["source"] == src)
-            fast_n = sum(1 for it in fasteners if it["source"] == src)
+            dcc_eq_n = sum(it.get("qty", 1) for it in dcc_eq if belongs_to(it, src))
+            dcc_rk_n = sum(it.get("qty", 1) for it in dcc_rack if belongs_to(it, src))
+            dcc_dv_n = sum(1 for it in dcc_div if belongs_to(it, src))
+            door_n = sum(1 for it in doors if belongs_to(it, src))
+            struct_n = sum(1 for it in struct if belongs_to(it, src))
+            fast_n = sum(1 for it in fasteners if belongs_to(it, src))
             ftype = ""
             if "KEQP" in src: ftype = "厨房设备"
             elif "KPART" in src: ftype = "厨房隔断"
