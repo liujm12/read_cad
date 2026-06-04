@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "layers": {
+    "0": "其他",
+    "0-A-C200X100X35X3.0": "其他",
+    "0-A-柱位牌": "结构",
+    "0-DCC": "DCC设备",
+    "A-DETL-GENF": "细部",
+    "A-DOOR": "门",
+    "A-GENM": "其他",
+    "A-GLAZ": "窗",
+    "I-FURN": "家具",
+    "K-CEIL-DCC-RACK": "DCC支架",
+    "K-CEIL-FFU-U14": "设备",
+    "K-CEIL-FFU-U16": "设备",
+    "K-PART-DOOR": "门",
+    "L-SITE": "其他",
+    "M-EQPM": "设备",
+    "P-PIPE": "管道/管件",
+    "P-SANR-FIXT": "卫生器具",
+    "Q-SPCQ": "特殊构件",
+    "S-BEAM": "结构",
+    "S-BEAM-HDLN": "结构",
+    "X-HL-CR-F1-EQP-02-01$0$0-DCC": "DCC设备",
+    "X-HLP3-CR-F3-LAY-KPART-03-001$0$K-PART-DOOR": "门"
+  },
+  "generated_by": "auto-discovery",
+  "total_layers": 22
+}

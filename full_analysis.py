@@ -1,6 +1,6 @@
 """Full pipeline: load all DWGs → unified axis grid → categorize → spatial match → master table."""
 import csv, re, math
-import sys, io
+import sys, io, json
 from pathlib import Path
 from collections import defaultdict, Counter
 from ezdxf.addons import odafc
@@ -222,6 +222,207 @@ def compute_building_bounds(grid, padding_mm=5000):
     y_min = letters[0][0] - padding_mm
     y_max = letters[-1][0] + padding_mm
     return x_min, y_min, x_max, y_max
+
+
+def discover_device_layers(all_data, building_bounds, layer_config_path=None):
+    """Auto-discover which layers contain real building components.
+
+    Analyzes INSERT entities across all drawings, computes a device-score
+    per layer, and returns a {layer_name: category} mapping.
+
+    Layers scoring below threshold are excluded (annotations, legends, templates).
+    If a previous config exists, loads and returns it without re-analysis.
+    """
+    if layer_config_path is None:
+        layer_config_path = Path(__file__).parent / "layer_config.json"
+
+    # Return cached config if exists
+    if layer_config_path.exists():
+        try:
+            with open(layer_config_path, encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("version"):
+                print(f"  Using cached layer config: {layer_config_path}")
+                print(f"    {len(cached.get('layers', {}))} layers mapped")
+                return cached["layers"]
+        except Exception:
+            pass
+
+    bx0, by0, bx1, by1 = building_bounds if building_bounds else (-1e9, -1e9, 1e9, 1e9)
+
+    # Collect per-layer statistics
+    layer_stats = defaultdict(lambda: {
+        "total": 0, "in_bounds": 0, "has_geom": 0,
+        "readable": 0, "is_xref": 0, "block_names": set(),
+    })
+
+    for data in all_data:
+        doc = data["doc"]
+        for e in data["entities"]:
+            if e.dxftype() != "INSERT":
+                continue
+            if not e.dxf.hasattr("insert"):
+                continue
+            name = e.dxf.name if e.dxf.hasattr("name") else ""
+            layer = e.dxf.layer
+            x = e.dxf.insert.x
+            y = e.dxf.insert.y
+            if abs(x) < 10 and abs(y) < 10:
+                continue
+
+            s = layer_stats[layer]
+            s["total"] += 1
+            s["block_names"].add(name)
+            if bx0 <= x <= bx1 and by0 <= y <= by1:
+                s["in_bounds"] += 1
+            # Readable name (not GUID like A$C0AF2E87)
+            if not re.match(r"^A\$C[A-F0-9]{7,8}$", name):
+                s["readable"] += 1
+            # XREF reference
+            if re.match(r"^[XD]-(HLP|HL|ST|AR|CR|SM)", name):
+                s["is_xref"] += 1
+            # Has actual geometry in block definition
+            block = doc.blocks.get(name)
+            if block is None:
+                simple = re.sub(r"^.*\$0\$", "", name)
+                block = doc.blocks.get(simple)
+            if block:
+                for be in block:
+                    if be.dxftype() in ("LINE", "LWPOLYLINE", "CIRCLE", "ARC", "POLYLINE"):
+                        s["has_geom"] += 1
+                        break
+
+    # Non-component keyword hints in layer name
+    EXCLUDE_PATTERNS = [
+        r"GRID", r"NOTE", r"TEXT", r"ANNO", r"DIMS", r"SYMB",
+        r"BG$", r"Cloud", r"HATCH", r"TITLE", r"BORDER",
+        r"标注", r"标记",
+    ]
+    # Template/sample layers (often at 0% bounds)
+    TEMPLATE_PATTERNS = [
+        r"STRUC-T", r"-T$", r"_T$",
+    ]
+    SYSTEM_LAYERS = {"Defpoints"}
+
+    # Score each layer
+    proposed = {}
+    for layer, s in layer_stats.items():
+        t = s["total"]
+        if t < 3:
+            continue
+
+        # Skip system layers
+        if layer in SYSTEM_LAYERS:
+            continue
+
+        # Skip pure XREF layers
+        if s["is_xref"] / t > 0.9:
+            continue
+
+        # Skip annotation/template layers
+        if any(re.search(p, layer, re.IGNORECASE) for p in EXCLUDE_PATTERNS):
+            continue
+        if any(re.search(p, layer, re.IGNORECASE) for p in TEMPLATE_PATTERNS):
+            continue
+
+        # Skip generic '0' layer with mostly GUID blocks
+        if layer == "0" and s["readable"] / t < 0.5:
+            continue
+
+        # Skip layers where all INSERTs are outside building bounds
+        if t >= 5 and s["in_bounds"] / t < 0.2:
+            continue
+
+        score = 0
+        bounds_pct = s["in_bounds"] / t
+        # Spatial: mostly inside building bounds
+        if t >= 5 and bounds_pct > 0.5:
+            score += 2
+        elif bounds_pct > 0.2:
+            score += 1
+        # Has actual geometry
+        if s["has_geom"] / t > 0.3:
+            score += 1
+        # Readable block names
+        if s["readable"] / t > 0.5:
+            score += 1
+
+        if score >= 3:
+            proposed[layer] = {
+                "count": t,
+                "in_bounds_pct": round(bounds_pct * 100),
+                "score": score,
+                "sample_blocks": sorted(s["block_names"])[:5],
+            }
+
+    # Infer category from layer name
+    CATEGORY_HINTS = [
+        (r"DCC.*RACK|RACK.*DCC", "DCC支架"),
+        (r"DCC", "DCC设备"),
+        (r"DOOR", "门"),
+        (r"GLAZ|WINDOW|窗", "窗"),
+        (r"COLS|BEAM|STRS|STRU|柱|梁", "结构"),
+        (r"PIPE|管道|PLUMB", "管道/管件"),
+        (r"DUCT|风管|HVAC", "风管"),
+        (r"WALL|墙|PART", "墙体"),
+        (r"EQPM|EQUIP|设备", "设备"),
+        (r"FURN|家具", "家具"),
+        (r"ELEC|LIGHT|照明|电气|CABLE", "电气"),
+        (r"FIRE|消防|灭火|喷淋", "消防"),
+        (r"BOLT|ANCHOR|FAST|螺栓", "紧固件/螺栓"),
+        (r"RAIL|扶栏|栏杆", "扶栏"),
+        (r"LADD|爬梯|梯", "爬梯"),
+        (r"FFU", "设备"),
+        (r"SANR|FIXT", "卫生器具"),
+        (r"SPCQ", "特殊构件"),
+        (r"DETL", "细部"),
+    ]
+
+    layer_map = {}
+    for layer in sorted(proposed):
+        cat = "其他"
+        for pattern, category in CATEGORY_HINTS:
+            if re.search(pattern, layer, re.IGNORECASE):
+                cat = category
+                break
+        layer_map[layer] = cat
+
+    # Present to user
+    print(f"\n  Auto-discovered {len(layer_map)} device layers:")
+    print(f"  {'Layer':<38s} {'Count':>6s} {'Bounds%':>8s} {'Category':<15s} {'Samples'}")
+    print(f"  {'-'*38} {'-'*6} {'-'*8} {'-'*15} {'-'*20}")
+    for layer, info in sorted(proposed.items(), key=lambda x: -x[1]["count"]):
+        cat = layer_map[layer]
+        samples = ", ".join(info["sample_blocks"][:3])
+        if len(samples) > 50:
+            samples = samples[:50] + "..."
+        print(f"  {layer[:36]:<38s} {info['count']:>6d} {info['in_bounds_pct']:>7}% {cat:<15s} {samples}")
+
+    print(f"\n  Confirm layer mapping? (y=accept / n=edit / q=skip all)")
+    try:
+        response = input("  > ").strip().lower()
+    except (EOFError, OSError):
+        print("  Non-interactive mode — auto-accepting")
+        response = "y"
+
+    if response == "y" or response == "":
+        # Save config
+        config = {"version": 1, "layers": layer_map,
+                  "generated_by": "auto-discovery",
+                  "total_layers": len(layer_map)}
+        with open(layer_config_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+        print(f"  Config saved to {layer_config_path}\n")
+        return layer_map
+    elif response == "q":
+        print("  Skipping layer config — will use block-name heuristics\n")
+        return None
+    else:
+        print("  Using block-name heuristics (edit layer_config.json to customize)\n")
+        with open(layer_config_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "layers": layer_map, "status": "pending_review"},
+                      f, ensure_ascii=False, indent=2)
+        return None
 
 
 # ═══════════════════════════════════
@@ -500,7 +701,16 @@ def main():
         print("  WARNING: No building bounds — all INSERTs will be kept\n")
 
     print("=" * 70)
-    print("PHASE 3: Building text index")
+    print("PHASE 3: Auto-discovering device layers")
+    print("=" * 70)
+    layer_map = discover_device_layers(all_data, building_bounds)
+    if layer_map:
+        print(f"  {len(layer_map)} device layers discovered\n")
+    else:
+        print("  Using block-name heuristics for classification\n")
+
+    print("=" * 70)
+    print("PHASE 4: Building text index")
     print("=" * 70)
     text_index = build_unified_text_index(all_data)
     print(f"  {len(text_index)} text annotations indexed\n")
@@ -534,9 +744,15 @@ def main():
                 if x < bx0 or x > bx1 or y < by0 or y > by1:
                     continue
 
-            cat = categorize_block(block_name, layer)
-            if cat in ("外部参照", "未知", "轴网符号", "剖切符号", "符号", "符号标记", "修订标记", "类型标记"):
-                continue
+            # Classification: use layer map if available, else fall back to block-name heuristics
+            if layer_map is not None:
+                if layer not in layer_map:
+                    continue  # not a recognized device layer
+                cat = layer_map[layer]
+            else:
+                cat = categorize_block(block_name, layer)
+                if cat in ("外部参照", "未知", "轴网符号", "剖切符号", "符号", "符号标记", "修订标记", "类型标记"):
+                    continue
 
             # Spatial matching for labels (cascade: 5m → 10m)
             label, model, label_qty = find_nearby_labels(x, y, text_index, 5000)
@@ -743,10 +959,11 @@ def main():
     dcc_rack = [it for it in all_inserts if it["cat"] == "DCC支架"]
     dcc_div = [it for it in all_inserts if it["cat"] == "DCC隔断/门"]
     doors = [it for it in all_inserts if it["cat"] in ("检修门", "单扇防火门", "双扇防火门", "卷帘门", "铝合金门", "门")]
-    struct = [it for it in all_inserts if it["cat"] in ("柱", "混凝土柱", "钢柱", "钢梁", "梁", "型钢", "柱底板/垫板")]
+    struct = [it for it in all_inserts if it["cat"] in ("柱", "混凝土柱", "钢柱", "钢梁", "梁", "型钢", "柱底板/垫板", "结构")]
+    mep_eq = [it for it in all_inserts if it["cat"] in ("设备", "管道/管件", "电气", "消防")]
     fasteners = [it for it in all_inserts if it["cat"] == "紧固件/螺栓"]
 
-    print(f"  DCC设备: {len(dcc_eq)}  |  DCC支架: {len(dcc_rack)}  |  门: {len(doors)}  |  结构: {len(struct)}")
+    print(f"  DCC设备: {len(dcc_eq)}  |  DCC支架: {len(dcc_rack)}  |  门: {len(doors)}  |  结构: {len(struct)}  |  设备: {len(mep_eq)}")
 
     # ═══════════════════════════════════
     # GENERATE MASTER TABLE
